@@ -1,42 +1,36 @@
-// Minimal stub parser so the UI works end-to-end.
+// app/api/parse/route.js
 import { NextResponse } from 'next/server';
+import pdf from 'pdf-parse';
+import { parseStatement } from '../../../lib/parseStatement';
 
-export async function POST() {
-  // Return fixed example data so we can test the UI.
-  const accountValue = 50000;
-  const holdings = [
-    { name: 'S&P 500 Index', symbol: 'FXAIX', weight: 50.0, er: 0.02, category: 'US Stock' },
-    { name: 'Total Intl Stock', symbol: 'VTIAX', weight: 20.0, er: 0.11, category: 'Intl Stock' },
-    { name: 'US Aggregate Bond', symbol: 'AGG', weight: 25.0, er: 0.04, category: 'Bonds' },
-    { name: 'Stable Value', symbol: '', weight: 5.0, er: 0.25, category: 'Cash' },
-  ];
+export const runtime = 'nodejs'; // ensure Node runtime on Vercel
 
-  const blendedER = holdings.reduce((acc, h) => acc + (h.er || 0) * (h.weight / 100), 0);
-  const adminFeePct = 0.25;
-  const adminFeeDollar = accountValue * (adminFeePct / 100);
-  const totalCostPct = blendedER + adminFeePct;
-  const annualCostDollar = accountValue * (totalCostPct / 100);
+export async function POST(req) {
+  try {
+    const formData = await req.formData();
+    const files = formData.getAll('files');
+    if (!files || files.length === 0) {
+      return NextResponse.json({ error: 'No file uploaded' }, { status: 400 });
+    }
 
-  const allocation = holdings.reduce((acc, h) => {
-    acc[h.category] = (acc[h.category] || 0) + h.weight;
-    return acc;
-  }, {});
+    // For now, handle the first PDF only.
+    const f = files[0];
+    const buf = Buffer.from(await f.arrayBuffer());
 
-  // add per-holding dollar cost for the simple table
-  const withCosts = holdings.map(h => ({
-    ...h,
-    costDollar: ((h.er || 0) / 100) * accountValue * (h.weight / 100),
-  }));
+    let text = '';
+    if ((f.type || '').includes('pdf') || /\.pdf$/i.test(f.name || '')) {
+      const result = await pdf(buf);
+      text = result.text || '';
+    } else {
+      // Non-PDF (image) not supported yet in this minimal step.
+      // We can add OCR in a later step.
+      return NextResponse.json({ error: 'Please upload a PDF statement for now.' }, { status: 415 });
+    }
 
-  const flags = [];
-  if ((allocation['Cash'] || 0) > 10) flags.push('High cash balance.');
-  if (withCosts.some(h => (h.er || 0) > 0.75)) flags.push('High-fee fund detected.');
-
-  return NextResponse.json({
-    meta: { accountValue },
-    fees: { blendedER, adminFeePct, adminFeeDollar, totalCostPct, annualCostDollar },
-    holdings: withCosts,
-    allocation,
-    flags
-  });
+    const parsed = parseStatement(text);
+    return NextResponse.json(parsed);
+  } catch (err) {
+    console.error('Parse error:', err);
+    return NextResponse.json({ error: 'Failed to parse file' }, { status: 500 });
+  }
 }
